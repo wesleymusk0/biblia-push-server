@@ -73,7 +73,7 @@ notificationsRef.on("child_added", (userNotificationsSnapshot) => {
         notification: {
           title: "BiblIA - Sua Biblioteca",
           body: message,
-          icon: '/icone.png' // Lembre-se de adicionar este ícone à raiz do seu site
+          //icon: '/icone.png' // Lembre-se de adicionar este ícone à raiz do seu site
         },
       };
 
