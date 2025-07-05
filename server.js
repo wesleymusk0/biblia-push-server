@@ -21,14 +21,16 @@ app.listen(PORT, () => {
 
 // 4. Inicialização do Firebase Admin
 try {
-  const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
+  // O Render montará o Secret File neste caminho
+  const serviceAccount = require("/etc/secrets/firebase-credentials.json");
+
   admin.initializeApp({
     credential: admin.credential.cert(serviceAccount),
     databaseURL: process.env.FIREBASE_DATABASE_URL
   });
-  console.log("Firebase Admin SDK inicializado com sucesso.");
+  console.log("Firebase Admin SDK inicializado com sucesso a partir de Secret File.");
 } catch(e) {
-    console.error("ERRO ao parsear FIREBASE_SERVICE_ACCOUNT ou inicializar Firebase:", e.message);
+    console.error("ERRO ao carregar credenciais ou inicializar Firebase:", e.message);
     process.exit(1);
 }
 
