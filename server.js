@@ -1,4 +1,4 @@
-// server.js - VERSÃO FINAL COM ENVIO ÚNICO POR USUÁRIO (usando sendMulticast)
+// server.js - VERSÃO COM ENVIO INDIVIDUAL POR USUÁRIO (loop com send)
 
 const admin = require("firebase-admin");
 const express = require("express");
@@ -73,40 +73,39 @@ notificationsRef.on("child_added", (userSnapshot) => {
       return;
     }
 
-    const messagePayload = {
+    const message = {
       notification: {
         title: "Biblioteca",
         body: notificationData.message,
       },
       webpush: {
         fcm_options: { link: "https://systematrix.com.br/biblia" },
-      },
-      tokens: tokens
+      }
     };
 
-    try {
-      const response = await admin.messaging().sendMulticast(messagePayload);
-      console.log(`Notificação [${notificationId}] enviada para ${response.successCount} de ${tokens.length} dispositivos do usuário ${uid}.`);
+    let successCount = 0;
+    let failedTokens = [];
 
-      // Você pode limpar tokens inválidos se quiser
-      const failedTokens = [];
-      response.responses.forEach((resp, idx) => {
-        if (!resp.success) {
-          failedTokens.push(tokens[idx]);
-        }
-      });
-
-      if (failedTokens.length > 0) {
-        console.warn(`Removendo ${failedTokens.length} token(s) inválido(s) de ${uid}.`);
-        failedTokens.forEach(async (token) => {
-          await admin.database().ref(`/users/${uid}/fcmTokens/${token}`).remove();
-        });
+    for (const token of tokens) {
+      try {
+        await admin.messaging().send({ ...message, token });
+        successCount++;
+      } catch (error) {
+        console.warn(`Erro ao enviar para token inválido (${token}):`, error.message);
+        failedTokens.push(token);
       }
-    } catch (error) {
-      console.error(`Erro ao enviar notificação [${notificationId}] para ${uid}:`, error);
-    } finally {
-      await notificationSnapshot.ref.remove(); // Remove da fila
     }
+
+    console.log(`Notificação [${notificationId}] enviada com sucesso para ${successCount} de ${tokens.length} dispositivos do usuário ${uid}.`);
+
+    if (failedTokens.length > 0) {
+      console.warn(`Removendo ${failedTokens.length} token(s) inválido(s) de ${uid}.`);
+      for (const token of failedTokens) {
+        await admin.database().ref(`/users/${uid}/fcmTokens/${token}`).remove();
+      }
+    }
+
+    await notificationSnapshot.ref.remove(); // Remove da fila
   });
 });
 
