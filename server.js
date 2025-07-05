@@ -1,10 +1,10 @@
-// server.js - VERSÃO FINAL CORRIGIDA (Anti-duplicação)
+// server.js - VERSÃO FINAL CORRIGIDA (Anti-duplicação de listeners)
 
-// 1. Importações (sem mudança)
+// 1. Importações
 const admin = require("firebase-admin");
 const express = require("express");
 
-// 2. Validação e Inicialização do Express (sem mudança)
+// 2. Validação e Inicialização do Express
 if (!process.env.FIREBASE_DATABASE_URL) {
   console.error("ERRO: Variável de ambiente FIREBASE_DATABASE_URL não definida.");
   process.exit(1);
@@ -18,7 +18,7 @@ app.listen(PORT, () => {
   console.log(`Servidor web escutando na porta ${PORT}`);
 });
 
-// 3. Inicialização do Firebase Admin (sem mudança)
+// 3. Inicialização do Firebase Admin
 try {
   const serviceAccount = require("/etc/secrets/firebase-credentials.json");
   admin.initializeApp({
@@ -31,34 +31,37 @@ try {
   process.exit(1);
 }
 
-// 4. Lógica Principal: Ouvir o banco de dados (A GRANDE MUDANÇA)
+// 4. Lógica Principal: Ouvir o banco de dados
 const db = admin.database();
-
-// Listener na raiz '/notifications'. Ele será disparado para cada nova notificação individual.
 const notificationsRef = db.ref("/notifications");
 
-// O evento 'child_added' aqui vai disparar uma vez para cada UID (aluno)
+// Set para controlar quais UIDs já possuem listener ativo
+const listeners = new Set();
+
 notificationsRef.on("child_added", (userSnapshot) => {
   const uid = userSnapshot.key;
+
+  // Prevenção contra múltiplos listeners para o mesmo usuário
+  if (listeners.has(uid)) return;
+  listeners.add(uid);
+
   const userNotificationsRef = userSnapshot.ref;
 
-  // Dentro do nó do usuário, escutamos por novas mensagens.
-  // Este listener interno garante que só processemos mensagens para este usuário específico.
   userNotificationsRef.on("child_added", async (notificationSnapshot) => {
     const notificationId = notificationSnapshot.key;
     const notificationData = notificationSnapshot.val();
 
-    // Verificação de segurança para não processar duas vezes
+    // Verificação de segurança para evitar processamento duplicado
     if (!notificationData || notificationData.status === 'processing' || notificationData.status === 'sent') {
       return;
     }
 
-    // Marca a notificação como "em processamento" para evitar que outro processo/thread a pegue.
+    // Marcar como em processamento
     await notificationSnapshot.ref.update({ status: 'processing' });
 
     console.log(`Processando notificação [${notificationId}] para o usuário ${uid}: "${notificationData.message}"`);
 
-    // Busca os tokens FCM do usuário
+    // Buscar tokens FCM do usuário
     const tokensSnapshot = await admin.database().ref(`/users/${uid}/fcmTokens`).get();
 
     if (!tokensSnapshot.exists()) {
@@ -68,33 +71,29 @@ notificationsRef.on("child_added", (userSnapshot) => {
     }
 
     const tokens = Object.keys(tokensSnapshot.val());
-    const notificationsToSend = [];
-
-    // Prepara uma promessa de envio para cada token
-    tokens.forEach(token => {
-        const messagePayload = {
-            notification: {
-                title: "Biblioteca",
-                body: notificationData.message,
-            },
-            webpush: {
-                fcm_options: { link: "https://systematrix.com.br/biblia" },
-            },
-            token: token
-        };
-        notificationsToSend.push(admin.messaging().send(messagePayload));
+    const notificationsToSend = tokens.map(token => {
+      return admin.messaging().send({
+        notification: {
+          title: "Biblioteca",
+          body: notificationData.message,
+        },
+        webpush: {
+          fcm_options: { link: "https://systematrix.com.br/biblia" },
+        },
+        token
+      });
     });
 
     try {
-        // Envia todas as notificações em paralelo
-        await Promise.all(notificationsToSend);
-        console.log(`Notificação [${notificationId}] enviada com sucesso para ${tokens.length} dispositivo(s) do usuário ${uid}.`);
+      // Enviar notificações paralelamente
+      await Promise.all(notificationsToSend);
+      console.log(`Notificação [${notificationId}] enviada com sucesso para ${tokens.length} dispositivo(s) do usuário ${uid}.`);
     } catch (error) {
-        console.error(`Erro ao enviar notificação [${notificationId}] para ${uid}:`, error.code);
-        // Aqui você pode adicionar lógica para lidar com tokens inválidos, se desejar
+      console.error(`Erro ao enviar notificação [${notificationId}] para ${uid}:`, error.code);
+      // Aqui você pode registrar ou lidar com tokens inválidos, se quiser
     } finally {
-        // Remove a notificação da fila após a tentativa de envio
-        await notificationSnapshot.ref.remove();
+      // Remover notificação da fila
+      await notificationSnapshot.ref.remove();
     }
   });
 });
