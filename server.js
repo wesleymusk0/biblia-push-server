@@ -1,5 +1,3 @@
-// server.js - VERSÃO COM ENVIO INDIVIDUAL POR USUÁRIO (loop com send)
-
 const admin = require("firebase-admin");
 const express = require("express");
 
@@ -35,7 +33,7 @@ try {
 // Lógica Principal
 const db = admin.database();
 const librariesRef = db.ref("/libraries");
-const listeners = new Set(); // Controle de listeners ativos
+const listeners = new Set();
 
 librariesRef.once("value", (snapshot) => {
   snapshot.forEach((librarySnap) => {
@@ -53,14 +51,22 @@ librariesRef.once("value", (snapshot) => {
         return;
       }
 
+      const studentUid = notificationData.uid;
+      const messageText = notificationData.message;
+
+      if (!studentUid || !messageText) {
+        console.warn(`Notificação inválida [${notificationId}] em ${librarianUid}. Dados ausentes.`);
+        return;
+      }
+
       await notificationSnapshot.ref.update({ status: 'processing' });
 
-      console.log(`Processando notificação [${notificationId}] para o bibliotecário ${librarianUid}: "${notificationData.message}"`);
+      console.log(`Processando notificação [${notificationId}] para o aluno ${studentUid}: "${messageText}"`);
 
-      const tokensSnapshot = await admin.database().ref(`/users/${librarianUid}/fcmTokens`).get();
+      const tokensSnapshot = await admin.database().ref(`/users/${studentUid}/fcmTokens`).get();
 
       if (!tokensSnapshot.exists()) {
-        console.log(`Nenhum token FCM encontrado para ${librarianUid}. Removendo notificação.`);
+        console.log(`Nenhum token FCM encontrado para ${studentUid}. Removendo notificação.`);
         await notificationSnapshot.ref.remove();
         return;
       }
@@ -68,7 +74,7 @@ librariesRef.once("value", (snapshot) => {
       const tokens = Object.keys(tokensSnapshot.val());
 
       if (tokens.length === 0) {
-        console.log(`Lista de tokens vazia para ${librarianUid}. Removendo notificação.`);
+        console.log(`Lista de tokens vazia para ${studentUid}. Removendo notificação.`);
         await notificationSnapshot.ref.remove();
         return;
       }
@@ -76,7 +82,7 @@ librariesRef.once("value", (snapshot) => {
       const message = {
         notification: {
           title: "Biblioteca",
-          body: notificationData.message,
+          body: messageText,
         },
         webpush: {
           fcm_options: { link: "https://systematrix.com.br/biblia" },
@@ -96,12 +102,12 @@ librariesRef.once("value", (snapshot) => {
         }
       }
 
-      console.log(`Notificação [${notificationId}] enviada com sucesso para ${successCount} de ${tokens.length} dispositivos do bibliotecário ${librarianUid}.`);
+      console.log(`Notificação [${notificationId}] enviada para ${successCount} de ${tokens.length} dispositivos do aluno ${studentUid}.`);
 
       if (failedTokens.length > 0) {
-        console.warn(`Removendo ${failedTokens.length} token(s) inválido(s) de ${librarianUid}.`);
+        console.warn(`Removendo ${failedTokens.length} token(s) inválido(s) de ${studentUid}.`);
         for (const token of failedTokens) {
-          await admin.database().ref(`/users/${librarianUid}/fcmTokens/${token}`).remove();
+          await admin.database().ref(`/users/${studentUid}/fcmTokens/${token}`).remove();
         }
       }
 
