@@ -1,119 +1,108 @@
 const admin = require("firebase-admin");
 const express = require("express");
 
-// Validação do ambiente
+// Verifica a variável de ambiente obrigatória
 if (!process.env.FIREBASE_DATABASE_URL) {
-  console.error("ERRO: Variável de ambiente FIREBASE_DATABASE_URL não definida.");
+  console.error("ERRO: Variável FIREBASE_DATABASE_URL não definida.");
   process.exit(1);
 }
 
-// Inicialização do Express
+// Inicializa Express
 const app = express();
-app.get("/", (req, res) => {
-  res.send("Servidor de notificações BiblIA está ativo!");
-});
+app.get("/", (req, res) => res.send("Servidor de notificações BiblIA está ativo!"));
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log(`Servidor web escutando na porta ${PORT}`);
-});
+app.listen(PORT, () => console.log(`Servidor escutando na porta ${PORT}`));
 
-// Inicialização do Firebase Admin
+// Inicializa Firebase Admin
 try {
   const serviceAccount = require("/etc/secrets/firebase-credentials.json");
   admin.initializeApp({
     credential: admin.credential.cert(serviceAccount),
     databaseURL: process.env.FIREBASE_DATABASE_URL
   });
-  console.log("Firebase Admin SDK inicializado com sucesso.");
+  console.log("Firebase Admin SDK inicializado.");
 } catch (e) {
-  console.error("ERRO ao inicializar Firebase:", e.message);
+  console.error("Erro ao iniciar Firebase:", e.message);
   process.exit(1);
 }
 
-// Lógica Principal
 const db = admin.database();
-const librariesRef = db.ref("/libraries");
+const librariesRef = db.ref("libraries");
 const listeners = new Set();
 
 librariesRef.once("value", (snapshot) => {
   snapshot.forEach((librarySnap) => {
-    const librarianUid = librarySnap.key;
-    const notificationsRef = librarySnap.ref.child("notifications");
+    const libraryId = librarySnap.key;
+    const notificationsRef = db.ref(`libraries/${libraryId}/notifications`);
 
-    if (listeners.has(librarianUid)) return;
-    listeners.add(librarianUid);
+    notificationsRef.once("value", (alunosSnap) => {
+      alunosSnap.forEach((alunoSnap) => {
+        const alunoUid = alunoSnap.key;
+        const alunoNotificationsRef = notificationsRef.child(alunoUid);
 
-    notificationsRef.on("child_added", async (notificationSnapshot) => {
-      const notificationId = notificationSnapshot.key;
-      const notificationData = notificationSnapshot.val();
+        const listenerKey = `${libraryId}_${alunoUid}`;
+        if (listeners.has(listenerKey)) return;
+        listeners.add(listenerKey);
 
-      if (!notificationData || notificationData.status === 'processing' || notificationData.status === 'sent') {
-        return;
-      }
+        alunoNotificationsRef.on("child_added", async (notifSnap) => {
+          const notifId = notifSnap.key;
+          const data = notifSnap.val();
 
-      const studentUid = notificationData.uid;
-      const messageText = notificationData.message;
+          if (!data || data.status === "processing" || data.status === "sent") return;
 
-      if (!studentUid || !messageText) {
-        console.warn(`Notificação inválida [${notificationId}] em ${librarianUid}. Dados ausentes.`);
-        return;
-      }
+          await notifSnap.ref.update({ status: "processing" });
 
-      await notificationSnapshot.ref.update({ status: 'processing' });
+          console.log(`📣 Enviando notificação [${notifId}] para aluno ${alunoUid}: "${data.message}"`);
 
-      console.log(`Processando notificação [${notificationId}] para o aluno ${studentUid}: "${messageText}"`);
+          const tokensSnap = await admin.database().ref(`users/${alunoUid}/fcmTokens`).get();
 
-      const tokensSnapshot = await admin.database().ref(`/users/${studentUid}/fcmTokens`).get();
+          if (!tokensSnap.exists()) {
+            console.warn(`Nenhum token FCM encontrado para ${alunoUid}.`);
+            await notifSnap.ref.remove();
+            return;
+          }
 
-      if (!tokensSnapshot.exists()) {
-        console.log(`Nenhum token FCM encontrado para ${studentUid}. Removendo notificação.`);
-        await notificationSnapshot.ref.remove();
-        return;
-      }
+          const tokens = Object.keys(tokensSnap.val());
+          if (tokens.length === 0) {
+            console.warn(`Tokens vazios para ${alunoUid}.`);
+            await notifSnap.ref.remove();
+            return;
+          }
 
-      const tokens = Object.keys(tokensSnapshot.val());
+          const message = {
+            notification: {
+              title: "Biblioteca",
+              body: data.message,
+            },
+            webpush: {
+              fcm_options: { link: "https://systematrix.com.br/biblia" },
+            }
+          };
 
-      if (tokens.length === 0) {
-        console.log(`Lista de tokens vazia para ${studentUid}. Removendo notificação.`);
-        await notificationSnapshot.ref.remove();
-        return;
-      }
+          let success = 0;
+          let failed = [];
 
-      const message = {
-        notification: {
-          title: "Biblioteca",
-          body: messageText,
-        },
-        webpush: {
-          fcm_options: { link: "https://systematrix.com.br/biblia" },
-        }
-      };
+          for (const token of tokens) {
+            try {
+              await admin.messaging().send({ ...message, token });
+              success++;
+            } catch (err) {
+              console.warn(`Erro com token (${token}):`, err.message);
+              failed.push(token);
+            }
+          }
 
-      let successCount = 0;
-      let failedTokens = [];
+          console.log(`✅ Notificação enviada com sucesso para ${success}/${tokens.length} tokens do aluno ${alunoUid}.`);
 
-      for (const token of tokens) {
-        try {
-          await admin.messaging().send({ ...message, token });
-          successCount++;
-        } catch (error) {
-          console.warn(`Erro ao enviar para token inválido (${token}):`, error.message);
-          failedTokens.push(token);
-        }
-      }
+          for (const token of failed) {
+            await admin.database().ref(`users/${alunoUid}/fcmTokens/${token}`).remove();
+          }
 
-      console.log(`Notificação [${notificationId}] enviada para ${successCount} de ${tokens.length} dispositivos do aluno ${studentUid}.`);
-
-      if (failedTokens.length > 0) {
-        console.warn(`Removendo ${failedTokens.length} token(s) inválido(s) de ${studentUid}.`);
-        for (const token of failedTokens) {
-          await admin.database().ref(`/users/${studentUid}/fcmTokens/${token}`).remove();
-        }
-      }
-
-      await notificationSnapshot.ref.remove(); // Remove da fila
+          await notifSnap.ref.remove(); // remove da fila
+        });
+      });
     });
   });
 });
 
-console.log("Servidor pronto e ouvindo por novas notificações.");
+console.log("🟢 Servidor pronto para processar notificações.");
