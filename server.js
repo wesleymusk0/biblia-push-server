@@ -34,78 +34,79 @@ try {
 
 // Lógica Principal
 const db = admin.database();
-const notificationsRef = db.ref("/notifications");
+const librariesRef = db.ref("/libraries");
 const listeners = new Set(); // Controle de listeners ativos
 
-notificationsRef.on("child_added", (userSnapshot) => {
-  const uid = userSnapshot.key;
+librariesRef.once("value", (snapshot) => {
+  snapshot.forEach((librarySnap) => {
+    const librarianUid = librarySnap.key;
+    const notificationsRef = librarySnap.ref.child("notifications");
 
-  if (listeners.has(uid)) return;
-  listeners.add(uid);
+    if (listeners.has(librarianUid)) return;
+    listeners.add(librarianUid);
 
-  const userNotificationsRef = userSnapshot.ref;
+    notificationsRef.on("child_added", async (notificationSnapshot) => {
+      const notificationId = notificationSnapshot.key;
+      const notificationData = notificationSnapshot.val();
 
-  userNotificationsRef.on("child_added", async (notificationSnapshot) => {
-    const notificationId = notificationSnapshot.key;
-    const notificationData = notificationSnapshot.val();
-
-    if (!notificationData || notificationData.status === 'processing' || notificationData.status === 'sent') {
-      return;
-    }
-
-    await notificationSnapshot.ref.update({ status: 'processing' });
-
-    console.log(`Processando notificação [${notificationId}] para o usuário ${uid}: "${notificationData.message}"`);
-
-    const tokensSnapshot = await admin.database().ref(`/users/${uid}/fcmTokens`).get();
-
-    if (!tokensSnapshot.exists()) {
-      console.log(`Nenhum token FCM encontrado para ${uid}. Removendo notificação.`);
-      await notificationSnapshot.ref.remove();
-      return;
-    }
-
-    const tokens = Object.keys(tokensSnapshot.val());
-
-    if (tokens.length === 0) {
-      console.log(`Lista de tokens vazia para ${uid}. Removendo notificação.`);
-      await notificationSnapshot.ref.remove();
-      return;
-    }
-
-    const message = {
-      notification: {
-        title: "Biblioteca",
-        body: notificationData.message,
-      },
-      webpush: {
-        fcm_options: { link: "https://systematrix.com.br/biblia" },
+      if (!notificationData || notificationData.status === 'processing' || notificationData.status === 'sent') {
+        return;
       }
-    };
 
-    let successCount = 0;
-    let failedTokens = [];
+      await notificationSnapshot.ref.update({ status: 'processing' });
 
-    for (const token of tokens) {
-      try {
-        await admin.messaging().send({ ...message, token });
-        successCount++;
-      } catch (error) {
-        console.warn(`Erro ao enviar para token inválido (${token}):`, error.message);
-        failedTokens.push(token);
+      console.log(`Processando notificação [${notificationId}] para o bibliotecário ${librarianUid}: "${notificationData.message}"`);
+
+      const tokensSnapshot = await admin.database().ref(`/users/${librarianUid}/fcmTokens`).get();
+
+      if (!tokensSnapshot.exists()) {
+        console.log(`Nenhum token FCM encontrado para ${librarianUid}. Removendo notificação.`);
+        await notificationSnapshot.ref.remove();
+        return;
       }
-    }
 
-    console.log(`Notificação [${notificationId}] enviada com sucesso para ${successCount} de ${tokens.length} dispositivos do usuário ${uid}.`);
+      const tokens = Object.keys(tokensSnapshot.val());
 
-    if (failedTokens.length > 0) {
-      console.warn(`Removendo ${failedTokens.length} token(s) inválido(s) de ${uid}.`);
-      for (const token of failedTokens) {
-        await admin.database().ref(`/users/${uid}/fcmTokens/${token}`).remove();
+      if (tokens.length === 0) {
+        console.log(`Lista de tokens vazia para ${librarianUid}. Removendo notificação.`);
+        await notificationSnapshot.ref.remove();
+        return;
       }
-    }
 
-    await notificationSnapshot.ref.remove(); // Remove da fila
+      const message = {
+        notification: {
+          title: "Biblioteca",
+          body: notificationData.message,
+        },
+        webpush: {
+          fcm_options: { link: "https://systematrix.com.br/biblia" },
+        }
+      };
+
+      let successCount = 0;
+      let failedTokens = [];
+
+      for (const token of tokens) {
+        try {
+          await admin.messaging().send({ ...message, token });
+          successCount++;
+        } catch (error) {
+          console.warn(`Erro ao enviar para token inválido (${token}):`, error.message);
+          failedTokens.push(token);
+        }
+      }
+
+      console.log(`Notificação [${notificationId}] enviada com sucesso para ${successCount} de ${tokens.length} dispositivos do bibliotecário ${librarianUid}.`);
+
+      if (failedTokens.length > 0) {
+        console.warn(`Removendo ${failedTokens.length} token(s) inválido(s) de ${librarianUid}.`);
+        for (const token of failedTokens) {
+          await admin.database().ref(`/users/${librarianUid}/fcmTokens/${token}`).remove();
+        }
+      }
+
+      await notificationSnapshot.ref.remove(); // Remove da fila
+    });
   });
 });
 
